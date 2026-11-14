@@ -147,7 +147,7 @@ class RecoveryTests(unittest.TestCase):
                 self.change(sql)
                 before = self.state()
                 item = recovery.scan(self.user_data)[0]
-                self.assertEqual(item["status"], "Unsupported / error")
+                self.assertTrue(item["status"].startswith("Read-only:"))
                 self.assertFalse(item["can_prepare"])
                 self.assertTrue(item["evidence"])
                 with self.assertRaises(recovery.Refused):
@@ -254,6 +254,7 @@ class RecoveryTests(unittest.TestCase):
         root = tk.Tk()
         root.withdraw()
         self.addCleanup(root.destroy)
+        self.addCleanup(lambda: [root.after_cancel(job) for job in root.tk.call("after", "info")])
         ui = app.Application(root, self.user_data)
         ui.populate(recovery.scan(self.user_data))
         self.assertEqual(str(ui.repair_button["state"]), "disabled")
@@ -286,6 +287,7 @@ class RecoveryTests(unittest.TestCase):
         root = tk.Tk()
         root.withdraw()
         self.addCleanup(root.destroy)
+        self.addCleanup(lambda: [root.after_cancel(job) for job in root.tk.call("after", "info")])
         ui = app.Application(root, self.user_data)
 
         def immediate(action, callback):

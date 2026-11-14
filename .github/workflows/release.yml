@@ -1,0 +1,78 @@
+name: Windows release
+
+on:
+  push:
+    tags:
+      - '**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+          architecture: x64
+      - name: Install pinned build dependencies
+        run: |
+          python -m pip install -r build-requirements.txt
+          if ($LASTEXITCODE -ne 0) { throw 'Dependency installation failed.' }
+      - name: Run tests and build executable
+        run: ./build.ps1
+      - name: Verify packaged application
+        run: |
+          $report = Join-Path $env:RUNNER_TEMP 'self-test.json'
+          $process = Start-Process -FilePath (Resolve-Path 'dist/VSCodeChatRecovery.exe') -ArgumentList @('--self-test', '--report', $report) -Wait -PassThru -WindowStyle Hidden
+          if ($process.ExitCode -ne 0) { throw 'Packaged self-test failed.' }
+          $result = Get-Content -LiteralPath $report -Raw | ConvertFrom-Json
+          if ($result.status -ne 'ok' -or $result.frozen -ne $true) { throw 'Invalid packaged self-test result.' }
+      - name: Generate SHA256 checksum
+        run: |
+          $hash = (Get-FileHash -LiteralPath 'dist/VSCodeChatRecovery.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  VSCodeChatRecovery.exe" | Set-Content -LiteralPath 'dist/SHA256SUMS.txt' -Encoding ascii
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-release
+          path: |
+            dist/VSCodeChatRecovery.exe
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-release
+          path: release-assets
+      - name: Publish release for existing tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "$RELEASE_TAG" \
+            release-assets/VSCodeChatRecovery.exe \
+            release-assets/SHA256SUMS.txt \
+            --verify-tag --generate-notes --title "$RELEASE_TAG"
