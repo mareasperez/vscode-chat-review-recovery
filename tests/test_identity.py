@@ -4,11 +4,11 @@ from pathlib import Path
 import time
 import uuid
 from unittest.mock import patch
-import tkinter as tk
 
 import app
 import recovery
 import test_recovery
+from qt_support import make_ui, process_events
 
 
 class IdentityTests(unittest.TestCase):
@@ -165,11 +165,7 @@ class IdentityTests(unittest.TestCase):
         self.assertFalse(recovery.scan(self.user_data)[0]["catalog_available"])
 
     def test_sort_order_selection_and_detail_are_safe(self):
-        root = tk.Tk()
-        root.withdraw()
-        self.addCleanup(root.destroy)
-        self.addCleanup(lambda: [root.after_cancel(job) for job in root.tk.call("after", "info")])
-        ui = app.Application(root, self.user_data)
+        ui = make_ui(self, self.user_data)
         base = recovery.scan(self.user_data)[0]
         rows = [
             dict(base, title="Z", id="z", created=None, modified=None, catalog_available=True),
@@ -180,18 +176,18 @@ class IdentityTests(unittest.TestCase):
         ui.populate(rows)
         self.assertEqual(ui.tree.get_children(), ("2", "1", "3", "0"))
         self.assertEqual(ui.tree.item("2")["values"][0], "A")
-        self.assertEqual(ui.tree.item("2")["values"][4], recovery.format_file_time(10))
+        self.assertIn("Technical evidence appears after selection", ui.details.get())
         ui.tree.selection_set("2")
-        ui.selected()
-        self.assertIn("Created (VS Code catalog): " + recovery.format_file_time(10),
+        process_events()
+        self.assertIn("Created: " + recovery.format_file_time(10),
                       ui.details.get("1.0", "end"))
         ui.incident = Path("incident.json")
         ui.acknowledged.set(True)
         for order, expected in (
-            (app.SORT_CREATED_OLD, ("3", "2", "1", "0")),
-            (app.SORT_MODIFIED_NEW, ("1", "2", "3", "0")),
-            (app.SORT_MODIFIED_OLD, ("2", "3", "1", "0")),
-            (app.SORT_TITLE, ("2", "1", "3", "0")),
+            (app.SORTS[1], ("3", "2", "1", "0")),
+            (app.SORTS[2], ("1", "2", "3", "0")),
+            (app.SORTS[3], ("2", "3", "1", "0")),
+            (app.SORTS[4], ("2", "1", "3", "0")),
         ):
             ui.sort_order.set(order)
             ui.sort_changed()
@@ -199,43 +195,31 @@ class IdentityTests(unittest.TestCase):
         self.assertIsNone(ui.incident)
         self.assertFalse(ui.acknowledged.get())
         self.assertFalse(ui.tree.selection())
-        ui.sort_order.set(app.SORT_MESSAGE)
+        ui.sort_order.set("Message")
         ui.sort_changed()
-        self.assertEqual(ui.sort_order.get(), app.SORT_TITLE)
-        self.assertIn("no verified complete message timestamps", ui.status.get())
-        ui.project_filter.set(ui.project_label(rows[0]))
+        self.assertEqual(ui.sort_order.get(), app.SORTS[4])
         ui.populate(rows)
+        ui.project_filter.set(ui.project_label(rows[0]))
         self.assertEqual(ui.project_filter.get(), ui.project_label(rows[0]))
 
-    def test_large_list_project_filter_and_batched_render_cancellation(self):
-        root = tk.Tk()
-        root.withdraw()
-        self.addCleanup(root.destroy)
-        self.addCleanup(lambda: [root.after_cancel(job) for job in root.tk.call("after", "info")])
-        ui = app.Application(root, self.user_data)
+    def test_large_list_project_filter_renders_all_rows(self):
+        ui = make_ui(self, self.user_data)
         base = recovery.scan(self.user_data)[0]
         rows = [dict(base, title=f"Item {i}", project="Alpha" if i % 2 else "Beta",
                      folders=[r"C:\Folder", r"D:\Other"]) for i in range(1101)]
         ui.populate(rows)
-        self.assertEqual(len(ui.tree.get_children()), 100)
+        self.assertEqual(len(ui.tree.get_children()), 1101)
         ui.project_filter.set(ui.project_label(rows[1]))
         ui.apply_filters()
-        self.assertEqual(len(ui.tree.get_children()), 100)
-        deadline = time.monotonic() + 5
-        while len(ui.tree.get_children()) < 550 and time.monotonic() < deadline:
-            root.update()
+        process_events()
         self.assertEqual(len(ui.tree.get_children()), 550)
         self.assertIn(r"D:\Other", ui.project_label(rows[1]))
 
     def test_filter_clears_incident_and_preview_never_loads_message(self):
-        root = tk.Tk()
-        root.withdraw()
-        self.addCleanup(root.destroy)
-        self.addCleanup(lambda: [root.after_cancel(job) for job in root.tk.call("after", "info")])
-        ui = app.Application(root, self.user_data)
+        ui = make_ui(self, self.user_data)
         ui.populate(recovery.scan(self.user_data))
         ui.tree.selection_set("0")
-        ui.selected()
+        process_events()
         ui.incident = Path("incident.json")
         ui.acknowledged.set(True)
         ui.search_text.set("not present")
@@ -245,14 +229,11 @@ class IdentityTests(unittest.TestCase):
         ui.search_text.set("")
         ui.tree.selection_set("0")
         with patch.object(recovery, "read_db", side_effect=AssertionError("preview read")):
-            ui.preview()
-        self.assertIn("preview unavailable", ui.details.get("1.0", "end").lower())
-        self.assertNotIn("original message", ui.details.get("1.0", "end"))
-        with patch.object(ui, "run") as worker:
-            ui.prepare()
-            callback = worker.call_args.args[1]
+            ui.window.show_history()
+        self.assertIn("no verified chat mapping", ui.window.history_text.toPlainText().lower())
+        self.assertNotIn("original message", ui.window.history_text.toPlainText())
         ui.search_text.set("not present")
-        callback(Path("unexpected-incident.json"))
+        ui.window._prepared("0", Path("unexpected.db"), Path("unexpected-incident.json"))
         self.assertIsNone(ui.incident)
         self.assertIn("Selection changed", ui.status.get())
         ui.user_data.set(str(self.root))

@@ -8,7 +8,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QSettings, qInstallMessageHandler
 from PySide6.QtWidgets import QApplication
 
-from qt_app import MainWindow
+from app import MainWindow
 
 
 class FontTests(unittest.TestCase):

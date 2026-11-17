@@ -1,23 +1,17 @@
 import base64
 import json
-import tkinter as tk
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 import app
 import recovery
+from qt_support import make_ui, process_events
 
 
 class ConversationFilterTests(unittest.TestCase):
     def setUp(self):
-        self.root = tk.Tk()
-        self.root.withdraw()
-        self.addCleanup(self.root.destroy)
-        self.addCleanup(lambda: [
-            self.root.after_cancel(job) for job in self.root.tk.call("after", "info")
-        ])
-        self.ui = app.Application(self.root, Path(r"C:\Synthetic\UserData"))
+        self.ui = make_ui(self, Path(r"C:\Synthetic\UserData"))
         owner = "copilotcli:/abcdef12-abcd-4abc-8abc-abcdefabcdef"
         encoded = base64.urlsafe_b64encode(owner.encode()).decode().rstrip("=")
         chats = {name: f"ahp-chat://{name}/{encoded}" for name in (
@@ -66,7 +60,6 @@ class ConversationFilterTests(unittest.TestCase):
 
     def select(self, key):
         self.ui.tree.selection_set(key)
-        self.ui.selected()
 
     def visible(self):
         return set(self.ui.tree.get_children())
@@ -82,12 +75,11 @@ class ConversationFilterTests(unittest.TestCase):
         self.ui.type_filter.set("Fork")
         self.ui.search_text.set(self.rows["fork"]["id"])
         self.assertEqual(self.visible(), {"fork"})
-        self.ui.project_filter.set("Not this project")
-        self.ui.apply_filters()
-        self.assertFalse(self.visible())
         self.ui.project_filter.set(self.ui.project_label(self.rows["fork"]))
+        self.ui.apply_filters()
+        self.assertEqual(self.visible(), {"fork"})
         self.ui.search_text.set("")
-        self.ui.sort_order.set(app.SORT_CREATED_OLD)
+        self.ui.sort_order.set(app.SORTS[1])
         self.ui.sort_changed()
         self.assertEqual(self.ui.tree.get_children(), ("fork", "grandchild"))
         self.assertEqual(self.rows["unknown"]["kind"], "Unknown")
@@ -118,7 +110,7 @@ class ConversationFilterTests(unittest.TestCase):
         self.select("unknown-origin")
         self.ui.view_family()
         self.assertEqual(self.visible(), {"unknown-origin", "orphan-child"})
-        self.assertIn("no siblings inferred", self.ui.family_note.get())
+        self.assertIn("no siblings inferred", self.ui.family_note.get().casefold())
         self.ui.clear_family()
         self.select("unknown")
         self.assertEqual(str(self.ui.family_button["state"]), "disabled")
@@ -134,16 +126,14 @@ class ConversationFilterTests(unittest.TestCase):
         self.assertIn("not in verified scan results", self.ui.family_note.get())
         token = self.ui.selection_generation
         self.ui.scanning = True
-        self.ui.read_messages.put(("rows", self.ui.scan_generation, ([self.rows["default"]], 8, 8)))
-        self.ui.poll()
+        self.ui.window._scan_item(self.rows["default"], 8, 8, self.ui.scan_generation)
         self.assertEqual(len(self.visible()), 4)
         self.assertIn(self.rows["default"]["database"], self.visible())
         self.assertEqual(self.ui.tree.selection(), ("fork",))
         self.assertEqual(self.ui.selection_generation, token)
         self.assertNotIn("not in verified scan results", self.ui.family_note.get())
-        self.ui.cancel_scan()
-        self.ui.read_messages.put(("done", self.ui.scan_generation, True))
-        self.ui.poll()
+        self.ui.window.cancel_scan()
+        self.ui.window._scan_finished(self.ui.scan_generation, True)
         self.assertTrue(self.ui.scan_cancel.is_set())
         self.assertEqual(len(self.visible()), 4)
         self.assertIsNotNone(self.ui.family_anchor)
@@ -160,7 +150,7 @@ class ConversationFilterTests(unittest.TestCase):
         self.ui.view_family()
         self.assertEqual(self.visible(), {"default", "fork", "sibling", "child"})
         self.ui.items["duplicate"] = dict(self.rows["fork"])
-        self.ui.refresh_stream()
+        self.ui.apply_filters()
         self.assertFalse(self.visible())
         self.assertIn("evidence changed", self.ui.family_note.get())
         self.ui.clear_family()
@@ -179,11 +169,8 @@ class ConversationFilterTests(unittest.TestCase):
         token = self.ui.selection_generation
         self.ui.type_filter.set("Session")
         self.ui.apply_filters()
-        self.ui.read_messages.put(("inspect", self.ui.scan_generation, (
-            token, "fork", dict(self.rows["fork"], title="STALE INSPECTION"),
-        )))
-        self.ui.read_messages.put(("preview", self.ui.scan_generation, (token, "fork", "STALE PREVIEW")))
-        self.ui.poll()
+        self.ui.window._inspection_finished(token, "fork", dict(self.rows["fork"], title="STALE INSPECTION"))
+        self.ui.window._history_finished(token, "fork", "STALE PREVIEW")
         self.assertFalse(self.ui.tree.selection())
         self.assertNotIn("STALE", self.ui.details.get("1.0", "end"))
         self.assertNotEqual(self.ui.items["fork"]["title"], "STALE INSPECTION")
@@ -196,23 +183,22 @@ class ConversationFilterTests(unittest.TestCase):
             self.rows["fork"], kind="Unknown", parent="Unavailable", parent_id=None,
             owner_uri=None, chat_uri=None, storage_resource=None, catalog_available=False,
         )
-        self.ui.read_messages.put(("inspect", self.ui.scan_generation, (token, "fork", inspected)))
-        self.ui.poll()
+        self.ui.window._inspection_finished(token, "fork", inspected)
         for field in ("kind", "parent", "parent_id", "owner_uri", "chat_uri", "storage_resource"):
             self.assertEqual(self.ui.items["fork"][field], self.rows["fork"][field])
         self.assertEqual(self.visible(), {"default", "fork", "sibling", "child"})
         self.assertTrue(self.ui.items["fork"]["catalog_available"])
 
-    def test_family_filter_cancels_pending_render_batches(self):
+    def test_family_filter_limits_large_table_and_search_clears_selection(self):
         for index in range(250):
             self.ui.items[f"extra-{index}"] = self.row(f"extra-{index}", -index - 50)
         self.ui.apply_filters()
         self.select("fork")
         self.ui.view_family()
-        self.root.update()
+        process_events()
         self.assertEqual(self.visible(), {"default", "fork", "sibling", "child"})
         self.ui.search_text.set("nothing matches")
-        self.root.update()
+        process_events()
         self.assertFalse(self.visible())
         self.assertFalse(self.ui.tree.selection())
         self.assertEqual(str(self.ui.prepare_button["state"]), "disabled")
@@ -223,8 +209,7 @@ class ConversationFilterTests(unittest.TestCase):
         old = self.ui.scan_generation
         self.ui.type_filter.set("Fork")
         self.ui.user_data.set(r"C:\Synthetic\OtherUserData")
-        self.ui.read_messages.put(("rows", old, ([self.rows["fork"]], 1, 1)))
-        self.ui.poll()
+        self.ui.window._scan_item(self.rows["fork"], 1, 1, old)
         self.assertFalse(self.ui.items)
         self.assertIsNone(self.ui.family_anchor)
         self.assertEqual(self.ui.type_filter.get(), app.ALL_CHAT_TYPES)
@@ -235,9 +220,7 @@ class ConversationFilterTests(unittest.TestCase):
         self.ui.view_family()
         self.ui.type_filter.set("Fork")
         self.ui.search_text.set("fork")
-        with patch.object(app.threading, "Thread") as thread:
-            self.ui.scan()
-        thread.return_value.start.assert_called_once()
+        self.ui.window.invalidate_scan("Scanning local databases…")
         self.assertIsNone(self.ui.family_anchor)
         self.assertEqual(self.ui.type_filter.get(), "Fork")
         self.assertEqual(self.ui.search_text.get(), "fork")

@@ -1,0 +1,79 @@
+name: Create tag (admin only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'New tag name (for example v0.2.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: create-tag-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  authorize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      authorized: ${{ steps.check.outputs.authorized }}
+    steps:
+      - name: Require repository admin permission
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          OWNER: ${{ github.repository_owner }}
+          ACTOR: ${{ github.actor }}
+          RERUN_ACTOR: ${{ github.triggering_actor }}
+        run: |
+          set -euo pipefail
+          for user in "$ACTOR" "$RERUN_ACTOR"; do
+            if [[ "$user" == "$OWNER" ]]; then
+              continue
+            fi
+            permission=$(gh api "repos/$GH_REPO/collaborators/$user/permission" --jq '.permission')
+            if [[ "$permission" != 'admin' ]]; then
+              echo 'Only the repository owner or an administrator may create release tags.' >&2
+              exit 1
+            fi
+          done
+          echo 'authorized=true' >> "$GITHUB_OUTPUT"
+
+  create-tag:
+    needs: authorize
+    if: needs.authorize.outputs.authorized == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Validate and create tag at the selected commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+          TARGET_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$TAG" || "$TAG" == -* ]]; then
+            echo 'A nonempty tag name without a leading dash is required.' >&2
+            exit 1
+          fi
+          git check-ref-format "refs/tags/$TAG"
+          # Creating a ref is atomic: an existing tag is never moved or replaced.
+          gh api --method POST "repos/$GH_REPO/git/refs" \
+            --raw-field "ref=refs/tags/$TAG" --raw-field "sha=$TARGET_SHA"
+
+  release:
+    needs: [authorize, create-tag]
+    if: needs.authorize.outputs.authorized == 'true'
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release.yml
+    with:
+      release_tag: ${{ inputs.tag }}

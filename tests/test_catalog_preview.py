@@ -1,13 +1,13 @@
 import base64
 import json
 import sqlite3
-import tkinter as tk
 import unittest
 import uuid
 from unittest.mock import patch
 
 import app
 import recovery
+from qt_support import make_ui, process_events
 import test_recovery
 
 
@@ -286,21 +286,16 @@ class CatalogPreviewTests(unittest.TestCase):
             self.assertIsNone(recovery.catalog_storage_key(uri))
 
     def test_stale_preview_cannot_replace_different_selection(self):
-        root = tk.Tk()
-        root.withdraw()
-        self.addCleanup(root.destroy)
-        self.addCleanup(lambda: [root.after_cancel(job) for job in root.tk.call("after", "info")])
-        ui = app.Application(root, self.user_data)
+        ui = make_ui(self, self.user_data)
         item = recovery.inspect_session(self.database, self.user_data)
         ui.populate([item, dict(item, title="Other", id="other")])
         ui.tree.selection_set("0")
-        ui.selected()
+        process_events()
         token = ui.selection_generation
         ui.tree.selection_set("1")
-        ui.selected()
-        ui.read_messages.put(("preview", ui.scan_generation, (token, "0", "STALE PRIVATE FIXTURE")))
-        ui.poll()
-        self.assertNotIn("STALE PRIVATE FIXTURE", ui.details.get("1.0", "end"))
+        process_events()
+        ui.window._history_finished(token, "0", "STALE PRIVATE FIXTURE")
+        self.assertNotIn("STALE PRIVATE FIXTURE", ui.window.history_text.toPlainText())
 
 
 if __name__ == "__main__":

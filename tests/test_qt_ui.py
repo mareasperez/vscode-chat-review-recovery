@@ -8,7 +8,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QApplication
 
-import qt_app
+import app
 
 
 class QtUiTests(unittest.TestCase):
@@ -27,8 +27,11 @@ class QtUiTests(unittest.TestCase):
         self.temporary.cleanup()
 
     def make_window(self):
-        window = qt_app.MainWindow(self.root, settings=self.settings, auto_host_check=False)
-        self.addCleanup(window.close)
+        window = app.MainWindow(self.root, settings=self.settings, auto_host_check=False)
+        def close_window():
+            window.busy = False
+            window.close()
+        self.addCleanup(close_window)
         self.app.processEvents()
         return window
 
@@ -42,14 +45,14 @@ class QtUiTests(unittest.TestCase):
         self.assertFalse(window.host_verified)
 
     def test_preferences_persist_directory_only_when_remember_is_enabled(self):
-        preferences = qt_app.Preferences(self.settings)
+        preferences = app.Preferences(self.settings)
         chosen = self.root / "Code"
 
         preferences.save_directory(chosen)
         self.assertEqual(preferences.initial_directory(), chosen)
 
         preferences.set_remember_directory(False)
-        self.assertEqual(preferences.initial_directory(), qt_app.recovery.default_user_data())
+        self.assertEqual(preferences.initial_directory(), app.recovery.default_user_data())
 
     def test_valid_directory_requires_agent_session_data_and_enables_scan(self):
         window = self.make_window()
@@ -130,6 +133,41 @@ class QtUiTests(unittest.TestCase):
         self.assertEqual(window.host_title.text(), "VS Code Running")
         self.assertIn("Close VS Code normally", window.host_detail.text())
         self.assertFalse(window.host_verified)
+
+    def test_busy_operation_disables_filters_and_family_actions(self):
+        window = self.make_window()
+        window.busy = True
+        window._update_actions()
+
+        for widget in (
+            window.search_input, window.project_filter, window.type_filter,
+            window.sort_filter, window.family_button, window.clear_family_button,
+            window.table, window.host_refresh,
+        ):
+            self.assertFalse(widget.isEnabled())
+
+    def test_filtering_out_selection_invalidates_stale_callbacks(self):
+        window = self.make_window()
+        item = {
+            "database": str(self.root / "session.db"), "id": "session",
+            "title": "Session", "kind": "Session", "project": "Project",
+            "folders": [], "status": "Read-only", "evidence": "Synthetic",
+            "edit_count": 0, "can_prepare": False,
+            "inspection_complete": True, "catalog_available": True,
+        }
+        window._scan_item(item, 1, 1, window.scan_generation)
+        window.table.selectRow(0)
+        self.app.processEvents()
+        old_generation = window.selection_generation
+
+        window.search_input.setText("no match")
+        self.app.processEvents()
+
+        self.assertIsNone(window.current_key())
+        self.assertGreater(window.selection_generation, old_generation)
+        window._history_finished(old_generation, str(self.root / "session.db"), "STALE")
+        self.assertNotIn("STALE", window.history_text.toPlainText())
+
 
 
 if __name__ == "__main__":

@@ -7,10 +7,10 @@ import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
-import tkinter as tk
 
 import app
 import recovery
+from qt_support import make_ui, process_events
 
 
 @contextmanager
@@ -251,64 +251,51 @@ class RecoveryTests(unittest.TestCase):
             recovery.validate_source(other, self.user_data)
 
     def test_gui_preview_binding_and_safe_cancel(self):
-        root = tk.Tk()
-        root.withdraw()
-        self.addCleanup(root.destroy)
-        self.addCleanup(lambda: [root.after_cancel(job) for job in root.tk.call("after", "info")])
-        ui = app.Application(root, self.user_data)
+        ui = make_ui(self, self.user_data)
         ui.populate(recovery.scan(self.user_data))
         self.assertEqual(str(ui.repair_button["state"]), "disabled")
         ui.tree.selection_set("0")
-        ui.selected()
-        self.assertIn(str(self.database), ui.details.get("1.0", "end"))
+        process_events()
+        self.assertIn(str(self.database), ui.details.get())
         self.assertEqual(str(ui.prepare_button["state"]), "normal")
         ui.incident = self.preview()
         ui.acknowledged.set(True)
         ui.update_buttons()
         self.assertEqual(str(ui.repair_button["state"]), "disabled")
         self.assertEqual(str(ui.restore_button["state"]), "disabled")
-        with patch.object(ui, "run") as worker:
-            ui.repair()
-            ui.restore()
+        with patch.object(app.QMessageBox, "warning", return_value=app.QMessageBox.StandardButton.Cancel), \
+             patch.object(app.QFileDialog, "getOpenFileName", return_value=("", "")), \
+             patch.object(ui.window, "_run_operation") as worker:
+            ui.window.repair_selected()
+            ui.window.restore_incident()
             worker.assert_not_called()
         ui.read_only = False
         ui.update_buttons()
         self.assertEqual(str(ui.repair_button["state"]), "normal")
         before = self.state()
-        with patch("app.messagebox.askyesno", return_value=False), patch.object(ui, "run") as worker:
-            ui.repair()
+        with patch.object(app.QMessageBox, "warning", return_value=app.QMessageBox.StandardButton.Cancel), \
+             patch.object(ui.window, "_run_operation") as worker:
+            ui.window.repair_selected()
             worker.assert_not_called()
         self.assertEqual(before, self.state())
-        ui.selected()
+        ui.tree.selection_remove("0")
+        process_events()
         self.assertIsNone(ui.incident)
         self.assertEqual(str(ui.repair_button["state"]), "disabled")
 
     def test_gui_mode_checks_fail_closed_and_enable_only_offline(self):
-        root = tk.Tk()
-        root.withdraw()
-        self.addCleanup(root.destroy)
-        self.addCleanup(lambda: [root.after_cancel(job) for job in root.tk.call("after", "info")])
-        ui = app.Application(root, self.user_data)
-
-        def immediate(action, callback):
-            callback(action())
-            ui.update_buttons()
-
-        with patch.object(ui, "run", side_effect=immediate):
-            with patch.object(recovery, "ensure_offline", side_effect=recovery.Refused("Code is open")):
-                ui.check_mode()
-            self.assertTrue(ui.read_only)
-            self.assertIn("Code is open", ui.mode.get())
-            self.assertEqual(str(ui.restore_button["state"]), "disabled")
-            self.assertEqual(str(ui.scan_button["state"]), "normal")
-            with patch.object(recovery, "ensure_offline"):
-                ui.check_mode()
-            self.assertFalse(ui.read_only)
-            self.assertEqual(str(ui.restore_button["state"]), "normal")
-            with patch.object(recovery, "ensure_offline", side_effect=recovery.Refused("Check unavailable")):
-                ui.check_mode()
-            self.assertTrue(ui.read_only)
-            self.assertEqual(str(ui.restore_button["state"]), "disabled")
+        ui = make_ui(self, self.user_data)
+        ui.window._host_check_failed("recovery.Refused: Close all VS Code/Insiders windows normally first")
+        self.assertTrue(ui.read_only)
+        self.assertIn("Running", ui.mode.get())
+        self.assertEqual(str(ui.restore_button["state"]), "disabled")
+        self.assertEqual(str(ui.scan_button["state"]), "normal")
+        ui.window._set_host_state("closed", "VS Code Closed", "Host closure verified")
+        self.assertFalse(ui.read_only)
+        self.assertEqual(str(ui.restore_button["state"]), "normal")
+        ui.window._host_check_failed("Host check unavailable")
+        self.assertTrue(ui.read_only)
+        self.assertEqual(str(ui.restore_button["state"]), "disabled")
 
 
 if __name__ == "__main__":

@@ -1,13 +1,14 @@
 import threading
 import time
-import tkinter as tk
 import unittest
 import sqlite3
+from pathlib import Path
 from unittest.mock import patch
 
 import app
 import recovery
 import test_recovery
+from qt_support import make_ui, process_events
 
 
 class StreamingTests(unittest.TestCase):
@@ -51,11 +52,7 @@ class StreamingTests(unittest.TestCase):
         self.assertFalse(item["can_prepare"])
 
     def ui(self):
-        root = tk.Tk()
-        root.withdraw()
-        self.addCleanup(root.destroy)
-        self.addCleanup(lambda: [root.after_cancel(job) for job in root.tk.call("after", "info")])
-        return app.Application(root, self.user_data)
+        return make_ui(self, self.user_data)
 
     def test_stream_preserves_exact_selection_and_rejects_stale_inspection(self):
         ui = self.ui()
@@ -63,18 +60,15 @@ class StreamingTests(unittest.TestCase):
         ui.items = {"selected": first}
         ui.apply_filters()
         ui.tree.selection_set("selected")
-        ui.selected()
+        process_events()
         token = ui.selection_generation
         second = dict(first, database="unrelated.db", id="unrelated", title="Other")
-        ui.read_messages.put(("rows", ui.scan_generation, ([second], 2, 2)))
-        ui.poll()
+        ui.window._scan_item(second, 2, 2, ui.scan_generation)
         self.assertEqual(ui.tree.selection(), ("selected",))
-        self.assertEqual(ui.items["selected"]["database"], str(self.database))
+        self.assertEqual(Path(ui.items["selected"]["database"]).resolve(), self.database.resolve())
         self.assertEqual(ui.selection_generation, token)
         ui.search_text.set("not present")
-        ui.read_messages.put(("inspect", ui.scan_generation,
-                              (token, "selected", dict(first, title="Wrong result"))))
-        ui.poll()
+        ui.window._inspection_finished(token, "selected", dict(first, title="Wrong result"))
         self.assertNotEqual(ui.items["selected"]["title"], "Wrong result")
         self.assertIsNone(ui.incident)
 
@@ -85,13 +79,12 @@ class StreamingTests(unittest.TestCase):
         ui.scanning = True
         cancellation = ui.scan_cancel
         ui.user_data.set(str(self.root))
-        ui.read_messages.put(("rows", old, ([item], 1, 1)))
-        ui.read_messages.put(("done", old, False))
-        ui.poll()
+        ui.window._scan_item(item, 1, 1, old)
+        ui.window._scan_finished(old, False)
         self.assertTrue(cancellation.is_set())
         self.assertFalse(ui.items)
         self.assertFalse(ui.scanning)
-        self.assertEqual(str(ui.scan_button["state"]), "normal")
+        self.assertEqual(str(ui.scan_button["state"]), "disabled")
 
     def test_locked_database_is_visible_and_bounded(self):
         connection = sqlite3.connect(self.database)
@@ -108,24 +101,17 @@ class StreamingTests(unittest.TestCase):
         ui = self.ui()
         provisional = next(recovery.stream_scan(self.user_data))[0]
         ui.populate([provisional])
-        ui.tree.selection_set("0")
-        actions = []
-
-        class Worker:
-            def __init__(self, *, target, daemon):
-                actions.append(target)
-                self.daemon = daemon
-
-            def start(self):
-                pass
-
-        with patch.object(app.threading, "Thread", Worker):
-            ui.selected()
+        window = ui.window
+        workers = []
+        with patch.object(window.pool, "start", side_effect=lambda worker: workers.append(worker)):
+            ui.tree.selection_set("0")
         self.assertEqual(str(ui.prepare_button["state"]), "disabled")
         with patch.object(recovery, "inspect_session", wraps=recovery.inspect_session) as inspect:
-            actions[0]()
-        self.assertEqual(inspect.call_args.args, (self.database, self.user_data))
-        ui.poll()
+            inspected = workers[0].function()
+        self.assertEqual(tuple(Path(value).resolve() for value in inspect.call_args.args),
+                         (self.database.resolve(), self.user_data.resolve()))
+        self.assertEqual(inspect.call_args.kwargs, {"strict": True})
+        window._inspection_finished(window.selection_generation, "0", inspected)
         self.assertTrue(ui.items["0"]["inspection_complete"])
         self.assertEqual(str(ui.prepare_button["state"]), "normal")
 

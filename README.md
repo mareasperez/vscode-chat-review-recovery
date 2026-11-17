@@ -6,7 +6,7 @@ A small, local Windows desktop tool for inspecting suspected stale chat reviews 
 
 ## Run
 
-Open `dist\VSCodeChatRecovery.exe`, or run `python -B qt_app.py` from a source checkout.
+Open `dist\VSCodeChatRecovery.exe`, or run `python -B app.py` from a source checkout.
 
 The desktop interface uses a permanent dark sidebar with **Recovery**, **Settings**, and **About** pages. The disabled **History** navigation item is intentionally not presented as implemented: verified per-conversation history is available inside the selected conversation's diagnosis panel. Host closure and conversation eligibility remain separate signals; **VS Code Closed** never makes an unsupported conversation repairable.
 
@@ -72,18 +72,22 @@ The app and its source directory can be moved without changing runtime data loca
 
 ### Automatic GitHub releases
 
+For manual tags, open **Actions → Create tag (admin only) → Run workflow**, choose the source branch, and enter a new tag such as `v0.2.0`. The workflow tags the selected run's exact commit, then calls the Windows release workflow directly (tags created by `GITHUB_TOKEN` do not trigger tag-push workflows). A read-only authorization job checks both the original actor and rerun actor: each must be the repository owner or have `admin` permission returned by GitHub's repository permissions API. Read, triage, write, maintain, unknown permissions, and API errors fail closed before any tag-creation or release job. This also supports administrators of organization-owned repositories.
+
+The workflow must exist on the default branch to appear in the Actions UI. Invalid or existing tags fail without moving any tag. A successful tag is retained if the later build or release fails; it is never deleted automatically. Public visibility alone does not authorize execution or tag creation. These workflow checks do not replace repository tag rulesets or prevent collaborators with separate Git write permissions from pushing tags outside this workflow.
+
 Pushing any tag triggers `.github/workflows/release.yml`. A Windows runner installs the pinned dependencies, runs the tests, builds the executable, and checks its packaged `--self-test`. Only after these gates pass does a separate job publish a GitHub release with `VSCodeChatRecovery.exe`, `SHA256SUMS.txt`, and generated release notes. Publication uses the built-in `GITHUB_TOKEN` with job-scoped `contents: write`; no personal token is required.
 
 Include the workflow and all source/dependency files in the tagged commit before pushing a tag (for example `v0.2.0`). Local-only tags do not trigger Actions. Existing releases are not overwritten, and failed builds do not publish releases. The executable remains unsigned. The local build script never creates tags or releases.
 
 ### Local development
 
-Python 3.13 and PySide6 are used for development. `app.py` remains as the legacy Tkinter compatibility module while the packaged application and normal source launcher use `qt_app.py`.
+Python 3.13 and PySide6 are used for development. `app.py` is the canonical Qt application and packaged entrypoint; `qt_app.py` remains a compatibility launcher that re-exports it.
 
 ```powershell
 python -B -m unittest discover -s tests -v
 python -m pip install -r requirements.txt
-python -B qt_app.py --scan --json
+python -B app.py --scan --json
 ```
 
 Only if the packager is missing, install build dependencies in a virtual environment:
@@ -95,6 +99,8 @@ python -m pip install -r build-requirements.txt
 ```
 
 Build and test:
+
+The build temporarily restricts DLL discovery through `PATH` to Python and Windows system directories, then restores the original value. This prevents unrelated developer tools from bundling incompatible ICU libraries with Qt. The default UI font uses points so widgets inheriting it have a valid point size.
 
 ```powershell
 .\build.ps1
