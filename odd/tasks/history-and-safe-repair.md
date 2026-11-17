@@ -22,6 +22,8 @@ S5. Preserve the existing checkout and scope. Keep all uncommitted changes, do n
 
 ## Tasks
 
+- T9 — persist and restore the latest read-only scan snapshot so conversation records and "Last scan" survive app restarts; cached rows must remain uninspected and require exact reinspection before any repair preparation; save partial scans on cancellation or close; route: delegated direct; status: complete; evidence: 71 tests pass; cache round-trip and close/cancel persistence tests pass; no real databases were touched.
+
 - T1 (S1, S4) — route: inline; status: in progress; evidence: SHA-256 matched, UI opened, packaged self-test failure isolated to an 8.3-short `%TEMP%` path and passed with a long temporary path; commit: forbidden pending authorization.
 - T2 (S2) — route: inline after read-only explorer mapping; status: pending; evidence: current preview is intentionally local-turn-only and omits inherited/provider history and `assistant_response_parts`; commit: forbidden pending authorization.
 - T3 (S3) — route: inline after read-only explorer mapping; status: in progress; evidence: the parent session remains rejected because its edit rows cannot be partitioned between peers, while the fork is now eligible only when the catalog provides one exact standalone fork mapping and every existing schema/peer/summary/file guard passes; 60 tests and independent high-risk verification passed; commit: forbidden pending authorization.

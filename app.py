@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sqlite3
@@ -47,6 +48,23 @@ from qt_theme import COLORS, STYLESHEET
 APP_VERSION = "0.2.0"
 ALL_PROJECTS = "All projects"
 ALL_CHAT_TYPES = "All chat types"
+SCAN_CACHE_VERSION = 1
+SCAN_CACHE_KEYS = (
+    "database",
+    "id",
+    "title",
+    "kind",
+    "project",
+    "folders",
+    "status",
+    "evidence",
+    "edit_count",
+    "parent",
+    "parent_id",
+    "created",
+    "file_modified",
+    "catalog_available",
+)
 CHAT_TYPES = ("Session", "Fork", "Child chat (tool)", "Child chat (origin unknown)", "Unknown")
 SORTS = (
     "Created: newest first",
@@ -216,6 +234,7 @@ class MainWindow(QMainWindow):
         self._wire_navigation()
         self._set_page(0)
         self._sync_directory_ui(invalidate=False)
+        self._restore_scan_cache()
         self._reset_selection()
         self._update_actions()
         if auto_host_check:
@@ -655,6 +674,104 @@ class MainWindow(QMainWindow):
         except (OSError, RuntimeError):
             return False, path, "The selected directory does not exist or cannot be read."
 
+    def _scan_cache_path(self) -> Path:
+        local_app_data = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local")))
+        try:
+            directory_key = str(self.user_data.expanduser().resolve()).casefold()
+        except (OSError, RuntimeError):
+            directory_key = str(self.user_data).casefold()
+        digest = hashlib.sha256(directory_key.encode("utf-8")).hexdigest()[:24]
+        return local_app_data / "VSCodeChatRecovery" / "scan-cache" / f"scan-{digest}.json"
+
+    def _persist_scan_cache(self) -> bool:
+        cache_path = self._scan_cache_path()
+        try:
+            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            items = []
+            for item in self.items.values():
+                lightweight = {
+                    key: item[key]
+                    for key in SCAN_CACHE_KEYS
+                    if key in item
+                }
+                if lightweight.get("database"):
+                    items.append(lightweight)
+            payload = {
+                "version": SCAN_CACHE_VERSION,
+                "directory": str(self.user_data.expanduser().resolve()),
+                "last_scan": self.last_scan.isoformat() if self.last_scan is not None else None,
+                "items": items,
+            }
+            temporary = cache_path.with_suffix(".tmp")
+            temporary.write_text(json.dumps(payload, ensure_ascii=True, indent=2), encoding="utf-8")
+            os.replace(temporary, cache_path)
+            return True
+        except (OSError, RuntimeError, TypeError, ValueError):
+            return False
+
+    def _restore_scan_cache(self) -> bool:
+        cache_path = self._scan_cache_path()
+        try:
+            payload = json.loads(cache_path.read_text(encoding="utf-8"))
+            if payload.get("version") != SCAN_CACHE_VERSION:
+                return False
+            cached_directory = Path(payload.get("directory", "")).expanduser().resolve()
+            if cached_directory != self.user_data.expanduser().resolve():
+                return False
+            raw_items = payload.get("items")
+            if not isinstance(raw_items, list):
+                return False
+
+            restored: dict[str, dict] = {}
+            for raw in raw_items:
+                if not isinstance(raw, dict):
+                    continue
+                database = raw.get("database")
+                if not isinstance(database, str) or not database:
+                    continue
+                item = {
+                    key: raw[key]
+                    for key in SCAN_CACHE_KEYS
+                    if key in raw
+                }
+                item.update({
+                    "status": "Not yet checked",
+                    "evidence": "This row was restored from the previous read-only scan. Select it to re-run exact safety inspection.",
+                    "inspection_complete": False,
+                    "can_prepare": False,
+                })
+                restored[database] = item
+
+            last_scan_text = payload.get("last_scan")
+            restored_last_scan = None
+            if isinstance(last_scan_text, str):
+                try:
+                    restored_last_scan = datetime.fromisoformat(last_scan_text)
+                except ValueError:
+                    restored_last_scan = None
+
+            if not restored:
+                return False
+            self.items = restored
+            self.last_scan = restored_last_scan
+            rendered = (
+                restored_last_scan.strftime("%b %d, %Y, %I:%M %p")
+                if restored_last_scan is not None
+                else "Previous scan"
+            )
+            self.database_summary.value.setText(str(len(restored)))
+            self.conversation_summary.value.setText(str(len(restored)))
+            self.scan_summary.value.setText(rendered)
+            self.settings_databases.setText(f"Databases: {len(restored)}")
+            self.settings_conversations.setText(f"Conversations: {len(restored)}")
+            self.settings_last_scan.setText(f"Last scan: {rendered}")
+            self.operation_status.setText("Restored previous read-only scan. Select a row to re-run safety inspection.")
+            self.empty_label.setVisible(False)
+            self.apply_filters()
+            return True
+        except (OSError, RuntimeError, json.JSONDecodeError, TypeError, ValueError):
+            return False
+
     def _sync_directory_ui(self, *, invalidate=True):
         blocker = QSignalBlocker(self.directory_input)
         self.directory_input.setText(str(self.user_data))
@@ -680,6 +797,7 @@ class MainWindow(QMainWindow):
             return
         self.user_data = Path(path)
         self._sync_directory_ui(invalidate=True)
+        self._restore_scan_cache()
 
     def directory_edited(self):
         self.set_directory(Path(self.directory_input.text().strip()))
@@ -790,6 +908,7 @@ class MainWindow(QMainWindow):
             self.scan_cancel.set()
             self.cancel_scan_button.setEnabled(False)
             self.operation_status.setText("Cancelling scan…")
+            self._persist_scan_cache()
 
     def _scan_item(self, item: dict, completed: int, total: int, generation: int):
         if generation != self.scan_generation:
@@ -814,6 +933,7 @@ class MainWindow(QMainWindow):
         self.settings_databases.setText(f"Databases: {len(self.items)}")
         self.settings_conversations.setText(f"Conversations: {len(self.items)}")
         self.operation_status.setText("Scan cancelled." if cancelled else "Scan complete. No repairs were applied.")
+        self._persist_scan_cache()
         self._set_ready(valid, "Ready" if valid else "Setup required")
         self.apply_filters()
 
@@ -1271,6 +1391,7 @@ class MainWindow(QMainWindow):
             event.ignore()
             return
         self.cancel_scan()
+        self._persist_scan_cache()
         event.accept()
 
 

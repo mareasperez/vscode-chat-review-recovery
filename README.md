@@ -8,6 +8,21 @@ A small, local Windows desktop tool for inspecting suspected stale chat reviews 
 
 Open `dist\VSCodeChatRecovery.exe`, or run `python -B app.py` from a source checkout.
 
+### Executable names
+
+The current Qt build is `dist\VSCodeChatRecovery.exe`. The other names in `dist` are
+historical or intermediate build candidates:
+
+- `VSCodeChatRecovery-Modern.exe` — older Qt redesign candidate.
+- `VSCodeChatRecovery-UnifiedQt.exe` — older combined Qt candidate.
+- `VSCodeChatRecovery-Status.exe` — older status-indicator candidate.
+- `VSCodeChatRecovery-Family.exe` — older family-navigation candidate.
+- `VSCodeChatRecovery-Hierarchy.exe` — older hierarchy candidate.
+- `VSCodeChatRecovery-StandaloneFork.exe` — older fork-specific candidate.
+
+Do not assume that an intermediate name is the latest build. Prefer the executable
+with the canonical name, rebuilt by `build.ps1`.
+
 The desktop interface uses a permanent dark sidebar with **Recovery**, **Settings**, and **About** pages. The disabled **History** navigation item is intentionally not presented as implemented: verified per-conversation history is available inside the selected conversation's diagnosis panel. Host closure and conversation eligibility remain separate signals; **VS Code Closed** never makes an unsupported conversation repairable.
 
 1. Select the VS Code user-data folder (defaults to the current user's `%APPDATA%\Code`). For Insiders or custom profiles, choose the actual directory containing `agentSessionData`.

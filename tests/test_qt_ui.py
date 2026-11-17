@@ -1,6 +1,7 @@
 import os
 import tempfile
 import unittest
+from datetime import datetime
 from pathlib import Path
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -167,6 +168,63 @@ class QtUiTests(unittest.TestCase):
         self.assertGreater(window.selection_generation, old_generation)
         window._history_finished(old_generation, str(self.root / "session.db"), "STALE")
         self.assertNotIn("STALE", window.history_text.toPlainText())
+
+    def test_scan_snapshot_round_trip_revokes_cached_repair_eligibility(self):
+        (self.root / "agentSessionData").mkdir()
+        window = self.make_window()
+        item = {
+            "database": str(self.root / "agentSessionData" / "cached" / "session.db"),
+            "id": "cached",
+            "title": "Cached conversation",
+            "kind": "Fork",
+            "project": "Cached project",
+            "folders": [],
+            "status": "Repair preview available",
+            "evidence": "Synthetic eligible inspection",
+            "edit_count": 3,
+            "inspection_complete": True,
+            "can_prepare": True,
+        }
+        window._scan_item(item, 1, 1, window.scan_generation)
+        window.last_scan = datetime(2026, 11, 17, 14, 55)
+
+        self.assertTrue(window._persist_scan_cache())
+
+        restored = app.MainWindow(self.root, settings=self.settings, auto_host_check=False)
+        self.addCleanup(restored.close)
+        self.app.processEvents()
+
+        self.assertEqual(len(restored.items), 1)
+        restored_item = next(iter(restored.items.values()))
+        self.assertEqual(restored_item["title"], "Cached conversation")
+        self.assertEqual(restored_item["status"], "Not yet checked")
+        self.assertFalse(restored_item["inspection_complete"])
+        self.assertFalse(restored_item["can_prepare"])
+        self.assertIn("re-run exact safety inspection", restored_item["evidence"])
+        self.assertIn("Last scan", restored.settings_last_scan.text())
+
+    def test_close_or_cancel_persists_partial_scan_records(self):
+        (self.root / "agentSessionData").mkdir()
+        window = self.make_window()
+        item = {
+            "database": str(self.root / "agentSessionData" / "partial" / "session.db"),
+            "id": "partial",
+            "title": "Partial conversation",
+            "kind": "Session",
+            "project": "Partial project",
+            "folders": [],
+            "status": "Not yet checked",
+            "evidence": "",
+            "edit_count": 2,
+            "inspection_complete": False,
+            "can_prepare": False,
+        }
+        window._scan_item(item, 1, 2, window.scan_generation)
+        window.close()
+        self.app.processEvents()
+
+        cache_path = window._scan_cache_path()
+        self.assertTrue(cache_path.is_file())
 
 
 
